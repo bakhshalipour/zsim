@@ -197,7 +197,11 @@ PostPatchFn PatchNanosleep(PrePatchArgs args) {
     // Check preconditions
     // FIXME, shouldn't this use safeCopy??
     if (!ts) return NullPostPatch;  // kernel will return EFAULT
-    if (ts->tv_sec < 0 || ts->tv_nsec < 0 || ts->tv_nsec > 999999999) return false;  // kernel will return EINVAL
+
+    // [Kasraa] The following line was 'return false;' There were problems
+    // casting bool to the appropriate return type of this function; I changed
+    // it to int to make my day easier!
+    if (ts->tv_sec < 0 || ts->tv_nsec < 0 || ts->tv_nsec > 999999999) return 0;  // kernel will return EINVAL
 
     uint64_t waitNsec = timespecToNs(*ts);
     if (waitNsec >= offsetNsec) waitNsec -= offsetNsec;
