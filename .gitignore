@@ -3,3 +3,4 @@ build/
 *.h5
 *.out
 heartbeat
+out.cfg
