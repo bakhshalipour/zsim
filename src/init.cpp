@@ -287,7 +287,7 @@ BaseCache* BuildCacheBank(Config& config, const string& prefix, g_string& name, 
         //Filter cache optimization
         if (type != "Simple") panic("Terminal cache %s can only have type == Simple", name.c_str());
         if (arrayType != "SetAssoc" || hashType != "None" || replType != "LRU") panic("Invalid FilterCache config %s", name.c_str());
-        cache = new FilterCache(numSets, numLines, cc, array, rp, accLat, invLat, name);
+        cache = new FilterCache(numSets, numLines, cc, array, rp, accLat, invLat, name, config);
     }
 
 #if 0

@@ -30,6 +30,9 @@
 #include "cache.h"
 #include "galloc.h"
 #include "zsim.h"
+#include "config.h"
+#include "g_std/g_unordered_map.h"
+#include "g_std/g_unordered_set.h"
 
 /* Extends Cache with an L0 direct-mapped cache, optimized to hell for hits
  *
@@ -61,9 +64,15 @@ class FilterCache : public Cache {
         lock_t filterLock;
         uint64_t fGETSHit, fGETXHit;
 
+        // [Kasraa] A random first-touch TLB, based on Banshee.
+        bool enableTLB;
+        drand48_data randomBuffer;
+		g_unordered_map <Address, Address> tlb;
+		g_unordered_set <Address> allocatedPages;   //Already-allocated physical pages
+
     public:
         FilterCache(uint32_t _numSets, uint32_t _numLines, CC* _cc, CacheArray* _array,
-                ReplPolicy* _rp, uint32_t _accLat, uint32_t _invLat, g_string& _name)
+                ReplPolicy* _rp, uint32_t _accLat, uint32_t _invLat, g_string& _name, Config &config)
             : Cache(_numLines, _cc, _array, _rp, _accLat, _invLat, _name)
         {
             numSets = _numSets;
@@ -74,6 +83,10 @@ class FilterCache : public Cache {
             fGETSHit = fGETXHit = 0;
             srcId = -1;
             reqFlags = 0;
+
+			enableTLB = config.get<bool>("sim.enableTLB", false);
+			srand48_r((uint64_t)this, &randomBuffer);
+            info("[%s] enableTLB=%d", name.c_str(), enableTLB);
         }
 
         void setSourceId(uint32_t id) {
@@ -126,7 +139,34 @@ class FilterCache : public Cache {
         }
 
         uint64_t replace(Address vLineAddr, uint32_t idx, bool isLoad, uint64_t curCycle) {
-            Address pLineAddr = procMask | vLineAddr;
+            Address pLineAddr;
+
+            if (enableTLB) {
+
+                // [Kasraa] vLineAddr has been right-shifted by 6 bits (block
+                // offset). Considering 4KB pages, we need to right-shift it by
+                // 6 bits again (12 bits in total).
+                Address vPageNum = vLineAddr >> 6;
+                uint64_t pPageNum;
+
+                if (tlb.find(vPageNum) == tlb.end()) {
+                    do {
+                        int64_t rand;
+                        lrand48_r(&randomBuffer, &rand);
+                        pPageNum = rand & 0x000fffffffffffff;
+                    } while (allocatedPages.find(pPageNum) != allocatedPages.end());
+                    tlb[vPageNum] = pPageNum;
+                    allocatedPages.insert(pPageNum);
+                } else {
+                    pPageNum = tlb[vPageNum];
+                }
+
+                pLineAddr = procMask | (pPageNum << 6) | (vLineAddr & 0x3f);
+
+            } else {
+                pLineAddr = procMask | vLineAddr;
+            }
+
             MESIState dummyState = MESIState::I;
             futex_lock(&filterLock);
             MemReq req = {pLineAddr, isLoad? GETS : GETX, 0, &dummyState, curCycle, &filterLock, dummyState, srcId, reqFlags};
