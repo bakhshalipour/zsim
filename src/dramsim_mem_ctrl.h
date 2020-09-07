@@ -32,6 +32,7 @@
 #include "memory_hierarchy.h"
 #include "pad.h"
 #include "stats.h"
+#include "config.h"
 
 namespace DRAMSim {
     class MultiChannelMemorySystem;
@@ -68,7 +69,8 @@ class DRAMSimMemory : public MemObject { //one DRAMSim controller
         void initStats(AggregateStat* parentStat);
 
         // Record accesses
-        uint64_t access(MemReq& req);
+        uint64_t access(MemReq& req, int type, uint32_t data_size = 4);
+        uint64_t access(MemReq& req); // { return access(req, 0, 1); };
 
         // Event-driven simulation (phase 2)
         uint32_t tick(uint64_t cycle);
@@ -86,14 +88,24 @@ class SplitAddrMemory : public MemObject {
     private:
         const g_vector<MemObject*> mems;
         const g_string name;
+		uint32_t _mapping_granu;
     public:
-        SplitAddrMemory(const g_vector<MemObject*>& _mems, const char* _name) : mems(_mems), name(_name) {}
+        SplitAddrMemory(const g_vector<MemObject*>& _mems, const char* _name, Config& config)
+			: mems(_mems), name(_name)
+		{
+			// 64 cachelines = 4096 bytes (page granularity mapping)
+			_mapping_granu = config.get<uint32_t>("sys.mem.mapGranu", 64);
+		}
 
         uint64_t access(MemReq& req) {
             Address addr = req.lineAddr;
-            uint32_t mem = addr % mems.size();
-            Address ctrlAddr = addr/mems.size();
-            req.lineAddr = ctrlAddr;
+			uint32_t mem = (addr / _mapping_granu) % mems.size();
+			Address sel1 = addr / _mapping_granu / mems.size();
+			Address sel2 = addr % _mapping_granu;
+			req.lineAddr = sel1 * _mapping_granu + sel2;
+            //uint32_t mem = addr % mems.size();
+            //Address ctrlAddr = addr/mems.size();
+            //req.lineAddr = ctrlAddr;
             uint64_t respCycle = mems[mem]->access(req);
             req.lineAddr = addr;
             return respCycle;

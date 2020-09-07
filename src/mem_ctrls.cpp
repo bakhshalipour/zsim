@@ -28,7 +28,54 @@
 #include "mem_ctrls.h"
 #include "zsim.h"
 
+
+SimpleMemory::SimpleMemory(uint32_t _latency, g_string& _name, Config& config)
+	: name(_name)
+	, latency(_latency)
+{
+	// trace is collected in mc.cpp.
+	_collect_trace = false;
+	_cur_trace_len = 0;
+	_max_trace_len = 10000;
+//	temp = new char[200];
+	temp = nullptr;
+	_trace_dir = config.get<const char *>("sys.mem.traceDir", "./");
+	//_address_trace = new Address[_max_trace_len];
+	//_type_trace = new uint32_t[_max_trace_len];
+	if (_collect_trace) {
+		FILE * f = fopen((_trace_dir + g_string("/") + name + g_string("trace.bin")).c_str(), "wb");
+		uint32_t num = 0;
+		fwrite(&num, sizeof(uint32_t), 1, f);
+		fclose(f);
+	    futex_init(&_lock);
+	}
+}
+
 uint64_t SimpleMemory::access(MemReq& req) {
+	if (_collect_trace) {
+	    futex_lock(&_lock);
+		_address_trace[_cur_trace_len] = req.lineAddr;
+		_type_trace[_cur_trace_len] = (req.type == PUTS || req.type == PUTX)? 1 : 0;
+		_cur_trace_len ++;
+		assert(_cur_trace_len <= _max_trace_len);
+		if (_cur_trace_len == _max_trace_len) {
+			FILE * f = fopen((_trace_dir + g_string("/") + name + g_string("trace.bin")).c_str(), "ab");
+			fwrite(_address_trace, sizeof(Address), _max_trace_len, f);
+			fwrite(_type_trace, sizeof(uint32_t), _max_trace_len, f);
+			fclose(f);
+			_cur_trace_len = 0;
+		}
+	    futex_unlock(&_lock);
+	}
+/*	if (temp == nullptr) {
+		//temp = std::new char[2000];
+		temp = (Chunk *) malloc(sizeof(Chunk));
+		for (uint32_t i = 0; i < 2000; i++)
+			temp->a[i] = 1;
+	} else {
+		int a = temp->a[rand() % 1000 ];
+		printf("a = %d\n", a);
+	}*/
     switch (req.type) {
         case PUTS:
         case PUTX:
@@ -40,7 +87,6 @@ uint64_t SimpleMemory::access(MemReq& req) {
         case GETX:
             *req.state = M;
             break;
-
         default: panic("!?");
     }
 

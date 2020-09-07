@@ -30,19 +30,31 @@
 #include "memory_hierarchy.h"
 #include "pad.h"
 #include "stats.h"
+#include "config.h"
 
 /* Simple memory (or memory bank), has a fixed latency */
 class SimpleMemory : public MemObject {
     private:
+		bool _collect_trace;
+		g_string _trace_dir;
+
         g_string name;
         uint32_t latency;
+		Address _address_trace[10000];
+		uint32_t _type_trace[10000];
+		uint32_t _cur_trace_len;
+		uint32_t _max_trace_len;
 
+		struct Chunk {
+			char a[2000];
+		};
+	
+		lock_t _lock;
+		Chunk * temp;
     public:
         uint64_t access(MemReq& req);
-
         const char* getName() {return name.c_str();}
-
-        SimpleMemory(uint32_t _latency, g_string& _name) : name(_name), latency(_latency) {}
+        SimpleMemory(uint32_t _latency, g_string& _name, Config& config);
 };
 
 

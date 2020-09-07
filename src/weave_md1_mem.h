@@ -91,8 +91,8 @@ class WeaveSimpleMemory : public SimpleMemory {
         uint32_t preDelay, postDelay;
 
     public:
-        WeaveSimpleMemory(uint32_t _latency, uint32_t _zeroLoadLatency, uint32_t _domain, g_string& _name) :
-            SimpleMemory(_latency, _name), zeroLoadLatency(_zeroLoadLatency), domain(_domain)
+        WeaveSimpleMemory(uint32_t _latency, uint32_t _zeroLoadLatency, uint32_t _domain, g_string& _name, Config& config) :
+            SimpleMemory(_latency, _name, config), zeroLoadLatency(_zeroLoadLatency), domain(_domain)
         {
             assert(_latency >= _zeroLoadLatency);
             preDelay = zeroLoadLatency/2;

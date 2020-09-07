@@ -86,7 +86,7 @@ class FilterCache : public Cache {
 
 			enableTLB = config.get<bool>("sim.enableTLB", false);
 			srand48_r((uint64_t)this, &randomBuffer);
-            info("[%s] enableTLB=%d", name.c_str(), enableTLB);
+            //info("[%s] enableTLB=%d", name.c_str(), enableTLB);
         }
 
         void setSourceId(uint32_t id) {

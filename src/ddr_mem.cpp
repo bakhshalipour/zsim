@@ -42,15 +42,15 @@ class DDRMemoryAccEvent : public TimingEvent {
     private:
         DDRMemory* mem;
         Address addr;
+		uint32_t data_size;
         bool write;
-
     public:
-        DDRMemoryAccEvent(DDRMemory* _mem, bool _isWrite, Address _addr, int32_t domain, uint32_t preDelay, uint32_t postDelay)
-            : TimingEvent(preDelay, postDelay, domain), mem(_mem), addr(_addr), write(_isWrite) {}
+        DDRMemoryAccEvent(DDRMemory* _mem, bool _isWrite, Address _addr, uint32_t _data_size, int32_t domain, uint32_t preDelay, uint32_t postDelay)
+            : TimingEvent(preDelay, postDelay, domain), mem(_mem), addr(_addr), data_size(_data_size), write(_isWrite) {}
 
         Address getAddr() const {return addr;}
         bool isWrite() const {return write;}
-
+		uint32_t getDataSize() const {return data_size;}
         void simulate(uint64_t startCycle) {
             mem->enqueue(this, startCycle);
         }
@@ -114,6 +114,7 @@ class SchedEvent : public TimingEvent, public GlobAlloc {
         void simulate(uint64_t startCycle) {
             if (state == QUEUED) {
                 state = RUNNING;
+				assert(mem);
                 uint64_t nextCycle = mem->tick(startCycle);
                 if (nextCycle) {
                     requeue(nextCycle);
@@ -153,19 +154,21 @@ class SchedEvent : public TimingEvent, public GlobAlloc {
 DDRMemory::DDRMemory(uint32_t _lineSize, uint32_t _colSize, uint32_t _ranksPerChannel, uint32_t _banksPerRank,
         uint32_t _sysFreqMHz, const char* tech, const char* addrMapping, uint32_t _controllerSysLatency,
         uint32_t _queueDepth, uint32_t _rowHitLimit, bool _deferredWrites, bool _closedPage,
-        uint32_t _domain, g_string& _name)
+        uint32_t _domain, g_string& _name, uint32_t _tBL, double time_scale)
     : lineSize(_lineSize), ranksPerChannel(_ranksPerChannel), banksPerRank(_banksPerRank),
       controllerSysLatency(_controllerSysLatency), queueDepth(_queueDepth), rowHitLimit(_rowHitLimit),
       deferredWrites(_deferredWrites), closedPage(_closedPage), domain(_domain), name(_name)
 {
     sysFreqKHz = 1000 * _sysFreqMHz;
-    initTech(tech);  // sets all tXX and memFreqKHz
+    initTech(tech, time_scale);  // sets all tXX and memFreqKHz
+	tBL = _tBL;
     if (memFreqKHz >= sysFreqKHz/2) {
         panic("You may need to tweak the scheduling code, which works with system cycles." \
             "With these frequencies, events (which run on system cycles) can't hit us every memory cycle.");
     }
 
-    minRdLatency = controllerSysLatency + memToSysCycle(tCL+tBL-1);
+    //minRdLatency = controllerSysLatency + memToSysCycle(tCL+tBL-1);
+    minRdLatency = controllerSysLatency + memToSysCycle(tCL+2-1);
     minWrLatency = controllerSysLatency;
     preDelay = controllerSysLatency;
     postDelayRd = minRdLatency - preDelay;
@@ -230,17 +233,19 @@ void DDRMemory::initStats(AggregateStat* parentStat) {
     memStats->init(name.c_str(), "Memory controller stats");
     profReads.init("rd", "Read requests"); memStats->append(&profReads);
     profWrites.init("wr", "Write requests"); memStats->append(&profWrites);
+    bytesReads.init("tot_rd", "Total Bytes Read"); memStats->append(&bytesReads);
+    bytesWrites.init("tot_wr", "Total Bytes Write"); memStats->append(&bytesWrites);
     profTotalRdLat.init("rdlat", "Total latency experienced by read requests"); memStats->append(&profTotalRdLat);
     profTotalWrLat.init("wrlat", "Total latency experienced by write requests"); memStats->append(&profTotalWrLat);
     profReadHits.init("rdhits", "Read row hits"); memStats->append(&profReadHits);
     profWriteHits.init("wrhits", "Write row hits"); memStats->append(&profWriteHits);
-    latencyHist.init("mlh", "latency histogram for memory requests", NUMBINS); memStats->append(&latencyHist);
+    latencyHist.init("mlh", "latency histogram for memory requests", NUMBINS);
     parentStat->append(memStats);
 }
 
 /* Bound phase interface */
-
-uint64_t DDRMemory::access(MemReq& req) {
+// data_size is the number of bursts
+uint64_t DDRMemory::access(MemReq& req, int type, uint32_t data_size) {
     switch (req.type) {
         case PUTS:
         case PUTX:
@@ -255,18 +260,45 @@ uint64_t DDRMemory::access(MemReq& req) {
 
         default: panic("!?");
     }
-
+	assert(data_size % 2 == 0);
     if (req.type == PUTS) {
         return req.cycle; //must return an absolute value, 0 latency
     } else {
         bool isWrite = (req.type == PUTX);
-        uint64_t respCycle = req.cycle + (isWrite? minWrLatency : minRdLatency);
+		// TODO If length > 1 cacheline, add 4 cycle for each cacheline
+        uint64_t respCycle = req.cycle + (isWrite? minWrLatency : minRdLatency) + memToSysCycle(data_size - 1);
         if (zinfo->eventRecorders[req.srcId]) {
+			// accessing multiple lines is modeled as multiple requests.
+			// All the requests can be processed in parallel.
             DDRMemoryAccEvent* memEv = new (zinfo->eventRecorders[req.srcId]) DDRMemoryAccEvent(this,
-                    isWrite, req.lineAddr, domain, preDelay, isWrite? postDelayWr : postDelayRd);
-            memEv->setMinStartCycle(req.cycle);
-            TimingRecord tr = {req.lineAddr, req.cycle, respCycle, req.type, memEv, memEv};
-            zinfo->eventRecorders[req.srcId]->pushRecord(tr);
+                    isWrite, req.lineAddr, data_size, domain, preDelay, isWrite? postDelayWr : postDelayRd);
+            if (type == 0) // default. The only record.
+            {
+                memEv->setMinStartCycle(req.cycle);
+                TimingRecord tr = {req.lineAddr, req.cycle, respCycle, req.type, memEv, memEv};
+                assert(!zinfo->eventRecorders[req.srcId]->hasRecord());
+                zinfo->eventRecorders[req.srcId]->pushRecord(tr);
+            } else if (type == 1) { // append the current event to the end of the previous one
+                TimingRecord tr = zinfo->eventRecorders[req.srcId]->popRecord();
+                memEv->setMinStartCycle(tr.reqCycle);
+                assert(tr.endEvent);
+                tr.endEvent->addChild(memEv, zinfo->eventRecorders[req.srcId]);
+                // XXX when to update respCycle
+                //tr.respCycle = respCycle;
+                tr.type = req.type;
+                tr.endEvent = memEv;
+                zinfo->eventRecorders[req.srcId]->pushRecord(tr);
+            } else if (type == 2) {
+                // append the current event to the end of the previous one
+                // but the current event is not on the critical path
+                TimingRecord tr = zinfo->eventRecorders[req.srcId]->popRecord();
+                memEv->setMinStartCycle(tr.reqCycle);
+                assert(tr.endEvent);
+                tr.endEvent->addChild(memEv, zinfo->eventRecorders[req.srcId]);
+                //tr.respCycle = respCycle;
+                tr.type = req.type;
+                zinfo->eventRecorders[req.srcId]->pushRecord(tr);
+            }
         }
         //info("Access to %lx at %ld, %ld latency", req.lineAddr, req.cycle, minLatency);
         return respCycle;
@@ -305,8 +337,8 @@ void DDRMemory::enqueue(DDRMemoryAccEvent* ev, uint64_t sysCycle) {
 
     req->addr = ev->getAddr();
     req->loc = mapLineAddr(ev->getAddr());
+	req->data_size = ev->getDataSize();
     req->write = ev->isWrite();
-
     req->arrivalCycle = memCycle;
     req->startSysCycle = sysCycle;
 
@@ -320,7 +352,8 @@ void DDRMemory::enqueue(DDRMemoryAccEvent* ev, uint64_t sysCycle) {
 
         // If needed, schedule an event to handle this new request
         if (!req->prev /* first in bank */) {
-            uint64_t minSchedCycle = std::max(memCycle, minRespCycle - tCL - tBL);
+			// XXX I don't know what this code is doing, but just adding data_size anyway.
+            uint64_t minSchedCycle = std::max(memCycle, minRespCycle - tCL - tBL); // * req->data_size);
             if (nextSchedCycle > minSchedCycle) minSchedCycle = std::max(minSchedCycle, findMinCmdCycle(*req));
             if (nextSchedCycle > minSchedCycle) {
                 if (nextSchedEvent) nextSchedEvent->annul();
@@ -426,7 +459,6 @@ void DDRMemory::queue(Request* req, uint64_t memCycle) {
 uint64_t DDRMemory::tick(uint64_t sysCycle) {
     uint64_t memCycle = sysToMemCycle(sysCycle);
     assert_msg(memCycle == nextSchedCycle, "%ld != %ld", memCycle, nextSchedCycle);
-
     uint64_t minSchedCycle = trySchedule(memCycle, sysCycle);
     assert(minSchedCycle >= memCycle);
     if (!rdQueue.full() && !wrQueue.full() && !overflowQueue.empty()) {
@@ -440,7 +472,8 @@ uint64_t DDRMemory::tick(uint64_t sysCycle) {
 
         // This request may be schedulable before trySchedule's minSchedCycle
         if (!req->prev /*first in bank queue*/) {
-            uint64_t minQueuedSchedCycle = std::max(memCycle, minRespCycle - tCL - tBL);
+			// XXX I don't know what this code is doing, but just adding data_size anyway.
+            uint64_t minQueuedSchedCycle = std::max(memCycle, minRespCycle - tCL - tBL); // * req->data_size);
             if (minSchedCycle > minQueuedSchedCycle) minSchedCycle = std::max(minQueuedSchedCycle, findMinCmdCycle(*req));
             if (minSchedCycle > minQueuedSchedCycle) {
                 DEBUG("Overflowed request lowered minSchedCycle %ld -> %ld (memCycle %ld)", minSchedCycle, minQueuedSchedCycle, memCycle);
@@ -530,9 +563,9 @@ uint64_t DDRMemory::trySchedule(uint64_t curCycle, uint64_t sysCycle) {
         } else {
             //DEBUG("Skipping 0x%lx, not first", (*ir)->ev->getAddr());
         }
+		//printf("ir=%ld\n", (uint64_t)&ir);
         ir.inc();
     }
-
     if (!r) {
         /* Because we have an event-driven model that uses the same timing
          * constraints to schedule a tick, this rarely happens. For example,
@@ -580,7 +613,10 @@ uint64_t DDRMemory::trySchedule(uint64_t curCycle, uint64_t sysCycle) {
 
     // Figure out data bus constraints, find actual time at which command is issued
     uint64_t cmdCycle = std::max(minCmdCycle, minRespCycle - tCL);
-    minRespCycle = cmdCycle + tCL + tBL;
+	// To support accessing granularity greater than a cacheline.
+    //minRespCycle = cmdCycle + tCL + tBL;
+    //minRespCycle = cmdCycle + tCL + tBL * r->data_size;
+    minRespCycle = cmdCycle + tCL + r->data_size;
     lastCmdWasWrite = r->write;
 
     // Record PRE
@@ -611,6 +647,13 @@ uint64_t DDRMemory::trySchedule(uint64_t curCycle, uint64_t sysCycle) {
 
         uint32_t scDelay = doneSysCycle - r->startSysCycle;
         profReads.inc();
+		//if (tBL == 4)
+	    //    bytesReads.inc(64 * r->data_size);
+		//else if (tBL == 1)
+	    //    bytesReads.inc(32 * r->data_size);
+		//else
+		//	assert(false);
+        bytesReads.inc(16 * r->data_size);
         profTotalRdLat.inc(scDelay);
         if (rowHit) profReadHits.inc();
         uint32_t bucket = std::min(NUMBINS-1, scDelay/BINSIZE);
@@ -618,6 +661,14 @@ uint64_t DDRMemory::trySchedule(uint64_t curCycle, uint64_t sysCycle) {
     } else {
         uint32_t scDelay = memToSysCycle(minRespCycle) + controllerSysLatency - r->startSysCycle;
         profWrites.inc();
+        bytesWrites.inc(16 * r->data_size);
+		//if (tBL == 4)
+        //	bytesWrites.inc(64 * r->data_size);
+		//else if (tBL == 1)
+        //	bytesWrites.inc(32 * r->data_size);
+		//else
+		//	assert(false);
+
         profTotalWrLat.inc(scDelay);
         if (rowHit) profWriteHits.inc();
     }
@@ -658,28 +709,34 @@ void DDRMemory::refresh(uint64_t sysCycle) {
 
 /* Tech/Device timing parameters */
 
-void DDRMemory::initTech(const char* techName) {
+void DDRMemory::initTech(const char* techName, double time_scale) {
     std::string tech(techName);
     double tCK;
 
     // tBL's below are for 64-byte lines; we adjust as needed
 
+    assert(time_scale == 1.0);  //No support for low-latency die-stacked DRAM
+    assert(tech == "DDR3-1333-CL10");   //No support for other techs
+
     // Please keep this orderly; go from faster to slower technologies
     if (tech == "DDR3-1333-CL10") {
+
         // from DRAMSim2/ini/DDR3_micron_16M_8B_x4_sg15.ini (Micron)
-        tCK = 1.5;  // ns; all other in mem cycles
+
+        tCK = 1.5 / 2;  // ns; all other in mem cycles
         tBL = 4;
-        tCL = 10;
-        tRCD = 10;
-        tRTP = 5;
-        tRP = 10;
-        tRRD = 4;
-        tRAS = 24;
-        tFAW = 20;
-        tWTR = 5;
-        tWR = 10;
-        tRFC = 74;
-        tREFI = 5200;
+        tCL = uint32_t(10 / time_scale);
+        tRCD = uint32_t( 10 / time_scale);
+        tRTP = uint32_t( 5 / time_scale);
+        tRP = uint32_t( 10 / time_scale);
+        tRRD = uint32_t( 4 / time_scale);
+        tRAS = uint32_t( 24 / time_scale);
+        tFAW = uint32_t( 20 / time_scale);
+        tWTR = uint32_t( 5 / time_scale);
+        tWR = uint32_t( 10 / time_scale);
+        tRFC = uint32_t( 74 / time_scale);
+        tREFI = uint32_t( 5200 / time_scale);
+
     } else if (tech == "DDR3-1066-CL7") {
         // from DDR3_micron_16M_8B_x4_sg187.ini
         // see http://download.micron.com/pdf/datasheets/dram/ddr3/1Gb_DDR3_SDRAM.pdf, cl7 variant, copied from it; tRRD is widely different, others match

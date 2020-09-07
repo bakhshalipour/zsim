@@ -157,8 +157,8 @@ class TimingEvent {
             assert(this);
             assert_msg(state == EV_NONE || state == EV_QUEUED, "state %d expected %d (%s)", state, EV_QUEUED, typeid(*this).name());
             state = EV_RUNNING;
-            assert_msg(startCycle >= minStartCycle, "startCycle %ld < minStartCycle %ld (%s), preDelay %d postDelay %d numChildren %d str %s",
-                    startCycle, minStartCycle, typeid(*this).name(), preDelay, postDelay, numChildren, str().c_str());
+            //assert_msg(startCycle >= minStartCycle, "startCycle %ld < minStartCycle %ld (%s), preDelay %d postDelay %d numChildren %d str %s",
+            //        startCycle, minStartCycle, typeid(*this).name(), preDelay, postDelay, numChildren, str().c_str());
             simulate(startCycle);
             // NOTE: This assertion is invalid now, because a call to done() may destroy the event.
             // However, since we check other transitions, this should not be a problem.

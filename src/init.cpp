@@ -73,6 +73,7 @@
 #include "tracing_cache.h"
 #include "virt/port_virtualizer.h"
 #include "weave_md1_mem.h" //validation, could be taken out...
+#include "mc.h"
 #include "zsim.h"
 
 extern void EndOfPhaseActions(); //in zsim.cpp
@@ -331,8 +332,15 @@ MemObject* BuildMemoryController(Config& config, uint32_t lineSize, uint32_t fre
     uint32_t latency = (type == "DDR")? -1 : config.get<uint32_t>("sys.mem.latency", 100);
 
     MemObject* mem = nullptr;
-    if (type == "Simple") {
-        mem = new SimpleMemory(latency, name);
+
+    // [Kasraa] If the 'type' is 'MemoryController', all requests memory
+    // requests (after LLC) would forward to the 'MemoryController' module
+    // defined in mc.h/.cpp. There, we need to build actural DRAM modules
+    // (e.g., Simple, DDR, DRAMSim, etc.).
+    if (type == "MemoryController") {
+		mem = new MemoryController(name, frequency, domain, config);	
+    } else if (type == "Simple") {
+        mem = new SimpleMemory(latency, name, config);
     } else if (type == "MD1") {
         // The following params are for MD1 only
         // NOTE: Frequency (in MHz) -- note this is a sys parameter (not sys.mem). There is an implicit assumption of having
@@ -348,7 +356,7 @@ MemObject* BuildMemoryController(Config& config, uint32_t lineSize, uint32_t fre
         mem = new WeaveMD1Memory(lineSize, frequency, bandwidth, latency, boundLatency, domain, name);
     } else if (type == "WeaveSimple") {
         uint32_t boundLatency = config.get<uint32_t>("sys.mem.boundLatency", 100);
-        mem = new WeaveSimpleMemory(latency, boundLatency, domain, name);
+        mem = new WeaveSimpleMemory(latency, boundLatency, domain, name, config);
     } else if (type == "DDR") {
         mem = BuildDDRMemory(config, lineSize, frequency, domain, name, "sys.mem.");
     } else if (type == "DRAMSim") {
@@ -510,9 +518,10 @@ static void InitSystem(Config& config) {
     }
 
     if (memControllers > 1) {
+        info("[Warn] There's more than one memory controller. memControllers=%d", memControllers);
         bool splitAddrs = config.get<bool>("sys.mem.splitAddrs", true);
         if (splitAddrs) {
-            MemObject* splitter = new SplitAddrMemory(mems, "mem-splitter");
+            MemObject* splitter = new SplitAddrMemory(mems, "mem-splitter", config);
             mems.resize(1);
             mems[0] = splitter;
         }
@@ -766,7 +775,7 @@ static void InitSystem(Config& config) {
     //Initialize event recorders
     //for (uint32_t i = 0; i < zinfo->numCores; i++) eventRecorders[i] = new EventRecorder();
 
-    AggregateStat* memStat = new AggregateStat(true);
+    AggregateStat* memStat = new AggregateStat();
     memStat->init("mem", "Memory controller stats");
     for (auto mem : mems) mem->initStats(memStat);
     zinfo->rootStat->append(memStat);

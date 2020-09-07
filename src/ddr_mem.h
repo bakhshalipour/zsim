@@ -147,6 +147,7 @@ class DDRMemory : public MemObject {
             Address addr;
             AddrLoc loc;
             bool write;
+			uint32_t data_size; // access data size. 1 for cacheline, 64 for page
 
             uint64_t rowHitSeq; // sequence number used to throttle max # row hits
 
@@ -235,6 +236,7 @@ class DDRMemory : public MemObject {
         // R/W stats
         PAD();
         Counter profReads, profWrites;
+		Counter bytesReads, bytesWrites;
         Counter profTotalRdLat, profTotalWrLat;
         Counter profReadHits, profWriteHits;  // row buffer hits
         VectorCounter latencyHist;
@@ -261,13 +263,16 @@ class DDRMemory : public MemObject {
         DDRMemory(uint32_t _lineSize, uint32_t _colSize, uint32_t _ranksPerChannel, uint32_t _banksPerRank,
             uint32_t _sysFreqMHz, const char* tech, const char* addrMapping, uint32_t _controllerSysLatency,
             uint32_t _queueDepth, uint32_t _rowHitLimit, bool _deferredWrites, bool _closedPage,
-            uint32_t _domain, g_string& _name);
+            uint32_t _domain, g_string& _name, uint32_t _tBL = 4, double time_scale = 1.0);
 
         void initStats(AggregateStat* parentStat);
         const char* getName() {return name.c_str();}
 
         // Bound phase interface
-        uint64_t access(MemReq& req);
+		// data_size is the number of bursts with burst length = 16 bytes.
+		// A cacheline takes 4 bursts
+        uint64_t access(MemReq& req, int type, uint32_t data_size = 4);
+        uint64_t access(MemReq& req) { return access(req, 0, 4); };
 
         // Weave phase interface
         void enqueue(DDRMemoryAccEvent* ev, uint64_t cycle);
@@ -285,7 +290,7 @@ class DDRMemory : public MemObject {
         inline uint64_t trySchedule(uint64_t curCycle, uint64_t sysCycle);
         uint64_t findMinCmdCycle(const Request& r) const;
 
-        void initTech(const char* tech);
+        void initTech(const char* tech, double time_scale);
 };
 
 
