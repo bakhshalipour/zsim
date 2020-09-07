@@ -138,7 +138,7 @@ uint64_t StreamPrefetcher::access(MemReq& req) {
 
                 if (prefetchPos < 64 && !e.valid[prefetchPos]) {
                     MESIState state = I;
-                    MemReq pfReq = {req.lineAddr + prefetchPos - pos, GETS, req.childId, &state, reqCycle, req.childLock, state, req.srcId, MemReq::PREFETCH};
+                    MemReq pfReq = {req.lineAddr + prefetchPos - pos, GETS, req.childId, &state, reqCycle, req.childLock, state, req.srcId, MemReq::PREFETCH, req.pc /*Kasraa: Prefetch requests carry the PC of their corresponding trigger accesses*/};
                     uint64_t pfRespCycle = parent->access(pfReq);  // FIXME, might segfault
                     e.valid[prefetchPos] = true;
                     e.times[prefetchPos].fill(reqCycle, pfRespCycle);

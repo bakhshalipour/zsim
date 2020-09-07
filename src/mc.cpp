@@ -55,6 +55,8 @@ MemoryController::access(MemReq& req)
     Address lineAddr = req.lineAddr;
     Address pageAddr = lineAddr / (4096 / 64);
 
+    // info("[%s] pc=%lx, addr=%lx", _name.c_str(), req.pc, req.lineAddr);
+
     // [Stats] Stats, Bookkeeping
     llcTotalMisses.inc();
 
@@ -76,10 +78,14 @@ MemoryController::access(MemReq& req)
 
 	futex_lock(&_lock);
 
+    // Only one (off-chip) DRAM module
+    req.cycle = extDram->access(req, 0, 4);
+
     // [Kasraa] This is an example of dispatching requests to different
     // DRAM modules. Requests with the LSB of 1 will be served by the
     // off-chip DRAM; other will be distributed on 4 die-stacked DRAM
     // modules.
+    /*
     if (lineAddr & 1) {
         req.cycle = extDram->access(req, 0, 4);	// Load from external dram
     } else {
@@ -89,6 +95,7 @@ MemoryController::access(MemReq& req)
         req.cycle = mcDrams[index]->access(req, 0, 4);	//All requests are served from in-packge DRAM
         req.lineAddr = lineAddr;
     }
+    */
 	
 	futex_unlock(&_lock);
 

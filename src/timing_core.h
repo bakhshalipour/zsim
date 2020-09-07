@@ -66,16 +66,16 @@ class TimingCore : public Core {
         void cSimEnd() {curCycle = cRec.cSimEnd(curCycle);}
 
     private:
-        inline void loadAndRecord(Address addr);
-        inline void storeAndRecord(Address addr);
+        inline void loadAndRecord(Address addr, Address pc);
+        inline void storeAndRecord(Address addr, Address pc);
         inline void bblAndRecord(Address bblAddr, BblInfo* bblInstrs);
         inline void record(uint64_t startCycle);
 
-        static void LoadAndRecordFunc(THREADID tid, ADDRINT addr);
-        static void StoreAndRecordFunc(THREADID tid, ADDRINT addr);
+        static void LoadAndRecordFunc(THREADID tid, ADDRINT addr, ADDRINT pc);
+        static void StoreAndRecordFunc(THREADID tid, ADDRINT addr, ADDRINT pc);
         static void BblAndRecordFunc(THREADID tid, ADDRINT bblAddr, BblInfo* bblInfo);
-        static void PredLoadAndRecordFunc(THREADID tid, ADDRINT addr, BOOL pred);
-        static void PredStoreAndRecordFunc(THREADID tid, ADDRINT addr, BOOL pred);
+        static void PredLoadAndRecordFunc(THREADID tid, ADDRINT addr, ADDRINT pc, BOOL pred);
+        static void PredStoreAndRecordFunc(THREADID tid, ADDRINT addr, ADDRINT pc, BOOL pred);
 
         static void BranchFunc(THREADID, ADDRINT, BOOL, ADDRINT, ADDRINT) {}
 } ATTR_LINE_ALIGNED;

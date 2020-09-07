@@ -372,7 +372,9 @@ class OOOCore : public Core {
 
         //Record load and store addresses
         Address loadAddrs[256];
+        Address loadPCs[256];
         Address storeAddrs[256];
+        Address storePCs[256];
         uint32_t loads;
         uint32_t stores;
 
@@ -455,8 +457,8 @@ class OOOCore : public Core {
         void cSimEnd();
 
     private:
-        inline void load(Address addr);
-        inline void store(Address addr);
+        inline void load(Address addr, Address pc);
+        inline void store(Address addr, Address pc);
 
         /* NOTE: Analysis routines cannot touch curCycle directly, must use
          * advance() for long jumps or insWindow.advancePos() for 1-cycle
@@ -476,10 +478,10 @@ class OOOCore : public Core {
 
         inline void bbl(Address bblAddr, BblInfo* bblInfo);
 
-        static void LoadFunc(THREADID tid, ADDRINT addr);
-        static void StoreFunc(THREADID tid, ADDRINT addr);
-        static void PredLoadFunc(THREADID tid, ADDRINT addr, BOOL pred);
-        static void PredStoreFunc(THREADID tid, ADDRINT addr, BOOL pred);
+        static void LoadFunc(THREADID tid, ADDRINT addr, ADDRINT pc);
+        static void StoreFunc(THREADID tid, ADDRINT addr, ADDRINT pc);
+        static void PredLoadFunc(THREADID tid, ADDRINT addr, ADDRINT pc, BOOL pred);
+        static void PredStoreFunc(THREADID tid, ADDRINT addr, ADDRINT pc, BOOL pred);
         static void BblFunc(THREADID tid, ADDRINT bblAddr, BblInfo* bblInfo);
         static void BranchFunc(THREADID tid, ADDRINT pc, BOOL taken, ADDRINT takenNpc, ADDRINT notTakenNpc);
 } ATTR_LINE_ALIGNED;  // Take up an int number of cache lines

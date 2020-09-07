@@ -4,3 +4,4 @@ build/
 *.out
 heartbeat
 out.cfg
+*.o
