@@ -20,8 +20,8 @@ f = h5py.File('zsim-ev.h5', 'r')
 dset = f["stats"]["root"]
 
 # Each dataset is first indexed by record. A record is a snapshot of all the
-# stats taken at a specific time.  All stats files have at least two records,
-# at beginning (dest[0])and end of simulation (dset[-1]).  Inside each record,
+# stats taken at a specific time. All stats files have at least two records,
+# at beginning (dest[0]) and end of simulation (dset[-1]). Inside each record,
 # the format follows the structure of the simulated objects. A few examples:
 
 # Phase count at end of simulation

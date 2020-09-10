@@ -333,10 +333,12 @@ MemObject* BuildMemoryController(Config& config, uint32_t lineSize, uint32_t fre
 
     MemObject* mem = nullptr;
 
-    // [Kasraa] If the 'type' is 'MemoryController', all requests memory
-    // requests (after LLC) would forward to the 'MemoryController' module
-    // defined in mc.h/.cpp. There, we need to build actural DRAM modules
-    // (e.g., Simple, DDR, DRAMSim, etc.).
+    // [Kasraa] If the type is 'MemoryController', all memory requests (after
+    // LLC) would forward to ONE 'MemoryController' module defined in
+    // mc.h/.cpp.There, we need to build actual DRAM modules (e.g., Simple,
+    // DDR, DRAMSim, etc.). The 'MemoryController' module acts as a
+    // serialization point, that observes (and possibly manipulates) all
+    // accesses before dispatching them to DRAM modules.
     if (type == "MemoryController") {
 		mem = new MemoryController(name, frequency, domain, config);	
     } else if (type == "Simple") {
@@ -515,6 +517,10 @@ static void InitSystem(Config& config) {
         //uint32_t domain = nextDomain(); //i*zinfo->numDomains/memControllers;
         uint32_t domain = i*zinfo->numDomains/memControllers;
         mems[i] = BuildMemoryController(config, zinfo->lineSize, zinfo->freqMHz, domain, name);
+
+        // [Kasraa] With 'MemoryController' as the type, we can have only one
+        // memory controller (forced serialization point).
+        if (dynamic_cast<MemoryController*>(mems[i]) != nullptr) assert(memControllers == 1);
     }
 
     if (memControllers > 1) {
@@ -775,10 +781,20 @@ static void InitSystem(Config& config) {
     //Initialize event recorders
     //for (uint32_t i = 0; i < zinfo->numCores; i++) eventRecorders[i] = new EventRecorder();
 
-    AggregateStat* memStat = new AggregateStat();
-    memStat->init("mem", "Memory controller stats");
-    for (auto mem : mems) mem->initStats(memStat);
-    zinfo->rootStat->append(memStat);
+    // [Kasraa] If the memory controller's type is not 'MemoryController', we'd
+    // have IRREGULAR stats (see stats.h) for it (memory controller's own stats
+    // and DRAM modules stats are not necessarily similar). That's not great.
+    // To have regular stats, I handle them inside the memory controller module
+    // (see mc.cpp).
+    if (dynamic_cast<MemoryController*>(mems[0]) == nullptr /*Not 'MemoryController'*/) {
+        AggregateStat* memStat = new AggregateStat(true);
+        memStat->init("mem", "Memory stats");
+        for (auto mem : mems) mem->initStats(memStat);
+        zinfo->rootStat->append(memStat);
+    } else {
+        assert(mems.size() == 1);
+        mems[0]->initStats(zinfo->rootStat);
+    }
 
     //Odds and ends: BuildCacheGroup new'd the cache groups, we need to delete them
     for (pair<string, CacheGroup*> kv : cMap) delete kv.second;

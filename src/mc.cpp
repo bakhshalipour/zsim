@@ -5,32 +5,46 @@
 #include "zsim.h"
 #include <core.h>
 
-MemoryController::MemoryController(g_string& name, uint32_t frequency, uint32_t domain, Config& config)
-	: _name (name)
+MemoryController::MemoryController(g_string& _name, uint32_t frequency, uint32_t domain, Config& config)
+	: name (_name)
 {
-	extDramType = config.get<const char *>("sys.mem.ext_dram.type", "DDR");
-	g_string extDramName = _name + g_string("-ext");
-    if (extDramType == "DDR") {
-        extDram = BuildDDRMemory(config, frequency, domain, extDramName, "sys.mem.ext_dram.", 4, 1.0 /*timing_scale*/);
-    } else {
-        assert(false);  // Other types are not handled now
-    }
-
-    mcDramType = config.get<const char *>("sys.mem.mc_dram.type", "DDR");
-    mcDramsPerCtrl = config.get<uint32_t>("sys.mem.mc_dram.mc_drams_per_ctrl", 0);
-    mcDrams = (MemObject **) gm_malloc(sizeof(MemObject *) * mcDramsPerCtrl);
-    mapGran = config.get<uint32_t>("sys.mem.mapGranu", 64);
-    for (uint32_t i = 0; i < mcDramsPerCtrl; i++) {
-        g_string mcDramName = _name + g_string("-mc-") + g_string(to_string(i).c_str());
-
-        // tBL for die-stacked is 1, so for data access, should multiply by 2, for TAD access, should multiply by 3.
-        if (mcDramType == "DDR") {
-            mcDrams[i] = BuildDDRMemory(config, frequency, domain, mcDramName, "sys.mem.mcdram.", 4, 1.0 /*timing_scale*/);
+    if (config.exists("sys.mem.ext_dram")) {
+        extDramType = config.get<const char *>("sys.mem.ext_dram.type", "DDR");
+        g_string extDramName = name + g_string("-ext");
+        if (extDramType == "DDR") {
+            extDram = BuildDDRMemory(config, frequency, domain, extDramName, "sys.mem.ext_dram.", 4, 1.0 /*timing_scale*/);
         } else {
             assert(false);  // Other types are not handled now
         }
     }
-    info("[%s] Created 1 external DRAM and %d MCDRAM modules", name.c_str(), mcDramsPerCtrl);
+
+    if (config.exists("sys.mem.mc_dram")) {
+        mcDramType = config.get<const char *>("sys.mem.mc_dram.type", "DDR");
+        mcDramsPerCtrl = config.get<uint32_t>("sys.mem.mc_dram.mc_drams_per_ctrl", 0);
+        mcDrams = (MemObject **) gm_malloc(sizeof(MemObject *) * mcDramsPerCtrl);
+
+        // [Kasraa] The mapGran determines 'interleaving' of cache lines across
+        // memory modules. E.g., with mapGran=1, cache lines A and A+1 would be
+        // mapped to different DRAM modules; with mapGran=64, cache lines A,
+        // A+1, ..., A+63 would be mapped to the same DRAM module, but A+64
+        // would be mapped to another one.
+        mapGran = config.get<uint32_t>("sys.mem.mapGranu", 1);
+
+        for (uint32_t i = 0; i < mcDramsPerCtrl; i++) {
+            g_string mcDramName = name + g_string("-mc-") + g_string(to_string(i).c_str());
+
+            // tBL for die-stacked is 1, so for data access, should multiply by 2, for TAD access, should multiply by 3.
+            if (mcDramType == "DDR") {
+                mcDrams[i] = BuildDDRMemory(config, frequency, domain, mcDramName, "sys.mem.mcdram.", 4, 1.0 /*timing_scale*/);
+            } else {
+                assert(false);  // Other types are not handled now
+            }
+        }
+    }
+
+    if (!extDram && !mcDrams) panic("No DRAM module is specified!");
+
+    info("[%s] Created %d external DRAM and %d MCDRAM modules", name.c_str(), extDram ? 1 : 0, mcDrams ? mcDramsPerCtrl : 0);
 }
 
 uint64_t 
@@ -55,7 +69,7 @@ MemoryController::access(MemReq& req)
     Address lineAddr = req.lineAddr;
     Address pageAddr = lineAddr / (4096 / 64);
 
-    // info("[%s] pc=%lx, addr=%lx", _name.c_str(), req.pc, req.lineAddr);
+    // info("[%s] pc=%lx, addr=%lx", name.c_str(), req.pc, req.lineAddr);
 
     // [Stats] Stats, Bookkeeping
     llcTotalMisses.inc();
@@ -76,10 +90,18 @@ MemoryController::access(MemReq& req)
     // [Stats]
 
 
-	futex_lock(&_lock);
+	futex_lock(&lock);
 
-    // Only one (off-chip) DRAM module
-    req.cycle = extDram->access(req, 0, 4);
+    // No off-chip DRAM; requests are interleaved across die-stacked DRAM
+    // modules
+    uint32_t index = (lineAddr / mapGran) % mcDramsPerCtrl;
+    Address mcDramAddr = (lineAddr / mapGran / mcDramsPerCtrl * mapGran) | (lineAddr % mapGran);
+    req.lineAddr = mcDramAddr;
+    req.cycle = mcDrams[index]->access(req, 0, 4);
+    req.lineAddr = lineAddr;
+
+    // Only one off-chip DRAM module and no die-stacked DRAM
+    // req.cycle = extDram->access(req, 0, 4);
 
     // [Kasraa] This is an example of dispatching requests to different
     // DRAM modules. Requests with the LSB of 1 will be served by the
@@ -90,21 +112,21 @@ MemoryController::access(MemReq& req)
         req.cycle = extDram->access(req, 0, 4);	// Load from external dram
     } else {
         uint32_t index = (lineAddr / mapGran) % mcDramsPerCtrl;
-        Address mcDramAddr = (lineAddr / 64 / mcDramsPerCtrl * 64) | (lineAddr % 64);
+        Address mcDramAddr = (lineAddr / mapGran / mcDramsPerCtrl * mapGran) | (lineAddr % mapGran);
         req.lineAddr = mcDramAddr;
-        req.cycle = mcDrams[index]->access(req, 0, 4);	//All requests are served from in-packge DRAM
+        req.cycle = mcDrams[index]->access(req, 0, 4);
         req.lineAddr = lineAddr;
     }
     */
 	
-	futex_unlock(&_lock);
+	futex_unlock(&lock);
 
 	return req.cycle;
 }
 
 DDRMemory* 
 MemoryController::BuildDDRMemory(Config& config, uint32_t frequency, 
-								 uint32_t domain, g_string name, const string& prefix, uint32_t tBL, double timing_scale) 
+								 uint32_t domain, g_string _name, const string& prefix, uint32_t tBL, double timing_scale)
 {
     uint32_t ranksPerChannel = config.get<uint32_t>(prefix + "ranksPerChannel", 4);
     uint32_t banksPerRank = config.get<uint32_t>(prefix + "banksPerRank", 8);  // DDR3 std is 8
@@ -125,23 +147,32 @@ MemoryController::BuildDDRMemory(Config& config, uint32_t frequency,
     uint32_t controllerLatency = config.get<uint32_t>(prefix + "controllerLatency", 10);  // in system cycles
 
     auto mem = new DDRMemory(zinfo->lineSize, pageSize, ranksPerChannel, banksPerRank, frequency, tech,
-            addrMapping, controllerLatency, queueDepth, maxRowHits, deferWrites, closedPage, domain, name);
+            addrMapping, controllerLatency, queueDepth, maxRowHits, deferWrites, closedPage, domain, _name);
     return mem;
 }
 
 void 
 MemoryController::initStats(AggregateStat* parentStat)
 {
-	AggregateStat* memStats = new AggregateStat();
-	memStats->init(_name.c_str(), "Memory controller stats");
+	AggregateStat* memctrlStats = new AggregateStat(true);
+	memctrlStats->init("memctrl", "Memory controller stats");
 
-    totalPages.init("totalPages", "Number of 4KB Pages Touched by the Application"); memStats->append(&totalPages);
-    llcCompMisses.init("llcCompulsoryMisses", "Compulsory LLC Misses"); memStats->append(&llcCompMisses);
-    llcTotalMisses.init("llcTotalMisses", "Total LLC Misses"); memStats->append(&llcTotalMisses);
+    // [Kasraa] To make stats pretty similar, streamlining the parse
+    // script's job
+    AggregateStat* memctrl0Stats = new AggregateStat();
+    memctrl0Stats->init("memctrl-0", "Memory controller stats");
 
-	extDram->initStats(memStats);
-	for (uint32_t i = 0; i < mcDramsPerCtrl; i++) 
-		mcDrams[i]->initStats(memStats);
+    totalPages.init("totalPages", "Number of 4KB Pages Touched by the Application"); memctrl0Stats->append(&totalPages);
+    llcCompMisses.init("llcCompulsoryMisses", "Compulsory LLC Misses"); memctrl0Stats->append(&llcCompMisses);
+    llcTotalMisses.init("llcTotalMisses", "Total LLC Misses"); memctrl0Stats->append(&llcTotalMisses);
+    memctrlStats->append(memctrl0Stats);
+    parentStat->append(memctrlStats);
 
-    parentStat->append(memStats);
+	AggregateStat* dramStats = new AggregateStat(true);
+	dramStats->init("DRAM", "DRAM modules stats");
+
+	if (extDram) extDram->initStats(dramStats);
+	if (mcDrams) for (uint32_t i = 0; i < mcDramsPerCtrl; i++) mcDrams[i]->initStats(dramStats);
+    parentStat->append(dramStats);
+
 }
